@@ -12,6 +12,13 @@ broadcast = "192.168.50.255"
 wake_timeout_secs = 120  # give up on a waiting client after this long
 wol_resend_secs = 10     # resend the magic packet this often while waiting
 
+# Optional: ask the host's wol-agent to sleep after this long with no open
+# connections. The agent refuses if the host is busy in ways the proxy
+# can't see (SSH, GPU jobs, direct traffic), which restarts the countdown.
+agent = "http://192.168.50.61:9090"
+agent_token_file = "server.token"  # same token as the agent's token_file
+idle_timeout_secs = 900
+
 [[hosts.ports]]
 listen = "0.0.0.0:8000"
 target = 8000

@@ -3,3 +3,6 @@
 /wol-agent
 /bench
 /dist/
+
+# Secrets
+*.token

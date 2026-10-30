@@ -1,0 +1,21 @@
+# Example config for wol-agent, as used on server.local.
+
+listen = "0.0.0.0:9090"
+token_file = "agent.token"  # shared secret; generate with: openssl rand -hex 32
+
+# Log "would run systemctl suspend" etc. instead of doing it. The busy
+# checks still run, so this is safe for testing.
+dry_run = true
+
+# Stopped before suspend: a live CUDA process can wedge the machine on resume.
+# Its own GPU use doesn't count as busy. Leave empty for none.
+service = "inference.service"
+
+# Established connections on these ports count as busy (direct use that
+# bypasses the proxy).
+watch_ports = [8000]
+
+# An interactive SSH session with no input for this long stops counting.
+ssh_max_idle_mins = 120
+
+suspend_command = ["systemctl", "suspend"]

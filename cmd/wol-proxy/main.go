@@ -1,6 +1,7 @@
 // wol-proxy forwards TCP connections to hosts that may be asleep. When a
 // host doesn't answer, it sends Wake-on-LAN and keeps the client waiting
 // until the host's port accepts connections, then copies bytes both ways.
+// Hosts with an agent are asked to sleep once they've been idle long enough.
 package main
 
 import (
@@ -21,12 +22,17 @@ type Config struct {
 }
 
 type HostConfig struct {
-	Name            string       `toml:"name"`
-	MAC             string       `toml:"mac"`
-	Address         string       `toml:"address"`
-	Broadcast       string       `toml:"broadcast"`
-	WakeTimeoutSecs int          `toml:"wake_timeout_secs"`
-	WolResendSecs   int          `toml:"wol_resend_secs"`
+	Name            string `toml:"name"`
+	MAC             string `toml:"mac"`
+	Address         string `toml:"address"`
+	Broadcast       string `toml:"broadcast"`
+	WakeTimeoutSecs int    `toml:"wake_timeout_secs"`
+	WolResendSecs   int    `toml:"wol_resend_secs"`
+	// Optional: the host's wol-agent, asked to sleep after IdleTimeoutSecs
+	// with no open connections.
+	Agent           string       `toml:"agent"`
+	AgentTokenFile  string       `toml:"agent_token_file"`
+	IdleTimeoutSecs int          `toml:"idle_timeout_secs"`
 	Ports           []PortConfig `toml:"ports"`
 }
 
@@ -40,8 +46,13 @@ type Host struct {
 	cfg HostConfig
 	mac net.HardwareAddr
 
+	agentToken string
+
 	mu         sync.Mutex
 	lastPacket time.Time
+	open       int       // client connections currently open, including waiting ones
+	lastActive time.Time // when the last connection closed, or a busy/sleep answer
+	agentState string    // last logged agent answer, so changes are logged once
 }
 
 const dialTimeout = time.Second
@@ -63,7 +74,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("host %s: bad mac: %v", hc.Name, err)
 		}
-		h := &Host{cfg: hc, mac: mac}
+		h := &Host{cfg: hc, mac: mac, lastActive: time.Now()}
+		if hc.Agent != "" {
+			if h.agentToken, err = readToken(hc.AgentTokenFile); err != nil {
+				log.Fatalf("host %s: %v", hc.Name, err)
+			}
+			go h.idleLoop()
+		}
 		for _, p := range hc.Ports {
 			ln, err := net.Listen("tcp", p.Listen)
 			if err != nil {
@@ -90,6 +107,8 @@ func (h *Host) serve(ln net.Listener, target string) {
 
 func (h *Host) handle(client *net.TCPConn, target string) {
 	defer client.Close()
+	h.connOpened()
+	defer h.connClosed()
 	peer := client.RemoteAddr()
 	start := time.Now()
 
