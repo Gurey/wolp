@@ -1,0 +1,17 @@
+# Shared config for both the Go and Rust proxies.
+#
+# Use IP addresses for `address`, not mDNS names like server.local:
+# a sleeping machine doesn't answer mDNS, so the name won't resolve
+# until it's already awake.
+
+[[hosts]]
+name = "server"
+mac = "10:7b:44:16:46:27"
+address = "192.168.50.61"
+broadcast = "192.168.50.255"
+wake_timeout_secs = 120  # give up on a waiting client after this long
+wol_resend_secs = 10     # resend the magic packet this often while waiting
+
+[[hosts.ports]]
+listen = "0.0.0.0:8000"
+target = 8000

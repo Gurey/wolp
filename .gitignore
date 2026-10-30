@@ -1,0 +1,5 @@
+# Build output
+/wol-proxy
+/wol-agent
+/bench
+/dist/
