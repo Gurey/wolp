@@ -1,0 +1,17 @@
+[Unit]
+Description=wol-proxy: forwards to hosts, waking them with Wake-on-LAN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=wol-proxy
+ExecStart=/usr/local/bin/wol-proxy -config /etc/wol-proxy/config.toml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

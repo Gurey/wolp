@@ -144,6 +144,7 @@ func (a *agent) change(name string, args ...string) error {
 		log.Printf("dry run: would run %q", cmd)
 		return nil
 	}
+	log.Printf("running %q", cmd)
 	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 		log.Printf("%q failed: %v: %s", cmd, err, strings.TrimSpace(string(out)))
 		return err
