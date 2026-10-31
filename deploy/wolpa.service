@@ -1,10 +1,10 @@
 [Unit]
-Description=wol-agent: answers wol-proxy's busy and sleep requests
+Description=wolpa: answers wolp's busy and sleep requests
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/wol-agent -config /etc/wol-agent/agent.toml
+ExecStart=/usr/local/bin/wolpa -config /etc/wolpa/wolpa.toml
 Restart=on-failure
 RestartSec=5
 

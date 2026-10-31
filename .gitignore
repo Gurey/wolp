@@ -1,6 +1,6 @@
 # Build output
-/wol-proxy
-/wol-agent
+/wolp
+/wolpa
 /bench
 /dist/
 

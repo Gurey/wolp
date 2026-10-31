@@ -1,4 +1,4 @@
-module wol-proxy
+module github.com/Gurey/wolp
 
 go 1.25.5
 

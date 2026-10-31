@@ -46,7 +46,8 @@ func ttyIdle(tty string) (time.Duration, bool) {
 		return 0, false
 	}
 	atime := fi.Sys().(*syscall.Stat_t).Atim
-	return time.Since(time.Unix(atime.Sec, atime.Nsec)), true
+	// The fields are int32 on 32-bit systems.
+	return time.Since(time.Unix(int64(atime.Sec), int64(atime.Nsec))), true
 }
 
 // gpuProcesses reports GPU compute processes other than the service's own,

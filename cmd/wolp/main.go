@@ -1,4 +1,4 @@
-// wol-proxy forwards TCP connections to hosts that may be asleep. When a
+// wolp (Wake-on-LAN proxy) forwards TCP connections to hosts that may be asleep. When a
 // host doesn't answer, it sends Wake-on-LAN and keeps the client waiting
 // until the host's port accepts connections, then copies bytes both ways.
 // Hosts with an agent are asked to sleep once they've been idle long enough.
@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -32,7 +33,7 @@ type HostConfig struct {
 	Broadcast       string `toml:"broadcast"`
 	WakeTimeoutSecs int    `toml:"wake_timeout_secs"`
 	WolResendSecs   int    `toml:"wol_resend_secs"`
-	// Optional: the host's wol-agent, asked to sleep after IdleTimeoutSecs
+	// Optional: the host's wolpa agent, asked to sleep after IdleTimeoutSecs
 	// with no open connections.
 	Agent           string       `toml:"agent"`
 	AgentTokenFile  string       `toml:"agent_token_file"`
@@ -64,9 +65,34 @@ type Host struct {
 
 const dialTimeout = time.Second
 
+// Set at build time with -ldflags "-X main.version=... -X main.build=...
+// -X main.commit=...". Releases built by GitHub Actions set all three.
+var (
+	version = "dev"
+	build   = "" // the GitHub Actions run number
+	commit  = ""
+)
+
+func versionString() string {
+	s := version
+	if build != "" {
+		s += " build " + build
+	}
+	if commit != "" {
+		s += " (" + commit + ")"
+	}
+	return s
+}
+
 func main() {
-	configPath := flag.String("config", "config.toml", "path to config file")
+	configPath := flag.String("config", "wolp.toml", "path to config file")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("wolp", versionString())
+		return
+	}
+	log.Printf("wolp %s starting", versionString())
 
 	var cfg Config
 	if _, err := toml.DecodeFile(*configPath, &cfg); err != nil {
@@ -78,6 +104,9 @@ func main() {
 
 	var hosts []*Host
 	for _, hc := range cfg.Hosts {
+		if hc.AgentTokenFile != "" {
+			hc.AgentTokenFile = relativeTo(*configPath, hc.AgentTokenFile)
+		}
 		h, err := newHost(hc)
 		if err != nil {
 			log.Fatalf("host %s: %v", hc.Name, err)
@@ -275,4 +304,13 @@ func pipe(client, upstream *net.TCPConn) (up, down int64) {
 	}()
 	wg.Wait()
 	return up, down
+}
+
+// relativeTo resolves a relative path in the config file against the config
+// file's directory, so it doesn't depend on where the binary was started.
+func relativeTo(configPath, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(filepath.Dir(configPath), path)
 }

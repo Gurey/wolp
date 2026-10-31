@@ -1,4 +1,4 @@
-# Shared config for both the Go and Rust proxies.
+# Example config for wolp, as used on pi.local.
 #
 # Use IP addresses for `address`, not mDNS names like server.local:
 # a sleeping machine doesn't answer mDNS, so the name won't resolve
@@ -15,7 +15,7 @@ broadcast = "192.168.50.255"
 wake_timeout_secs = 120  # give up on a waiting client after this long
 wol_resend_secs = 10     # resend the magic packet this often while waiting
 
-# Optional: ask the host's wol-agent to sleep after this long with no open
+# Optional: ask the host's wolpa to sleep after this long with no open
 # connections. The agent refuses if the host is busy in ways the proxy
 # can't see (SSH, GPU jobs, direct traffic), which restarts the countdown.
 agent = "http://192.168.50.61:9090"

@@ -238,3 +238,15 @@ func TestWakeIsRateLimited(t *testing.T) {
 		t.Fatalf("after the interval: %d packets, want 2", n)
 	}
 }
+
+func TestRelativeTo(t *testing.T) {
+	for _, tt := range []struct{ config, path, want string }{
+		{"/etc/wolp/wolp.toml", "server.token", "/etc/wolp/server.token"},
+		{"/etc/wolp/wolp.toml", "/srv/server.token", "/srv/server.token"},
+		{"wolp.toml", "server.token", "server.token"},
+	} {
+		if got := relativeTo(tt.config, tt.path); got != tt.want {
+			t.Errorf("relativeTo(%q, %q) = %q, want %q", tt.config, tt.path, got, tt.want)
+		}
+	}
+}

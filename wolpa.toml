@@ -1,7 +1,7 @@
-# Example config for wol-agent, as used on server.local.
+# Example config for wolpa, as used on server.local.
 
 listen = "0.0.0.0:9090"
-token_file = "agent.token"  # shared secret; generate with: openssl rand -hex 32
+token_file = "wolpa.token"  # shared secret; generate with: openssl rand -hex 32
 
 # Log "would run systemctl suspend" etc. instead of doing it. The busy
 # checks still run, so this is safe for testing.

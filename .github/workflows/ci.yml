@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # Runs vet and the race-enabled tests, then cross-compiles every
+      # platform so a build that only breaks on e.g. 32-bit ARM is caught.
+      - run: make dist BUILD=${{ github.run_number }}

@@ -276,7 +276,7 @@ var page = template.Must(template.New("page").Funcs(template.FuncMap{
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wol-proxy</title>
+<title>wolp</title>
 <style>
   :root { color-scheme: light dark; --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #677085; --line: #e3e6ec;
           --awake: #1a7f4b; --asleep: #677085; --waking: #b25e00; --going: #6b4fbb; }
@@ -308,7 +308,7 @@ var page = template.Must(template.New("page").Funcs(template.FuncMap{
 </style>
 </head>
 <body><main>
-<h1>wol-proxy</h1>
+<h1>wolp</h1>
 <div id="hosts">{{template "hosts" .}}</div>
 <footer><span id="live">connecting…</span> · counters since the proxy started · <a href="api/status">JSON</a></footer>
 </main>

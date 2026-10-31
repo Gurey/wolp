@@ -1,4 +1,4 @@
-// wol-agent runs on each host behind wol-proxy. It answers whether the host is
+// wolpa (the wolp agent) runs on each host behind wolp. It answers whether the host is
 // busy and, when asked to sleep and it isn't, stops the configured service and
 // suspends the machine. The proxy decides when a host is idle; the agent only
 // vetoes based on activity the proxy can't see (SSH, GPU jobs, direct traffic).
@@ -8,10 +8,12 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -51,9 +53,34 @@ type agent struct {
 // gpuWait is how long to wait for GPU processes to exit after stopping the service.
 const gpuWait = 30 * time.Second
 
+// Set at build time with -ldflags "-X main.version=... -X main.build=...
+// -X main.commit=...". Releases built by GitHub Actions set all three.
+var (
+	version = "dev"
+	build   = "" // the GitHub Actions run number
+	commit  = ""
+)
+
+func versionString() string {
+	s := version
+	if build != "" {
+		s += " build " + build
+	}
+	if commit != "" {
+		s += " (" + commit + ")"
+	}
+	return s
+}
+
 func main() {
-	configPath := flag.String("config", "agent.toml", "path to config file")
+	configPath := flag.String("config", "wolpa.toml", "path to config file")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("wolpa", versionString())
+		return
+	}
+	log.Printf("wolpa %s starting", versionString())
 
 	var cfg Config
 	if _, err := toml.DecodeFile(*configPath, &cfg); err != nil {
@@ -62,7 +89,11 @@ func main() {
 	if len(cfg.SuspendCommand) == 0 {
 		log.Fatal("config: suspend_command is required")
 	}
-	token, err := os.ReadFile(cfg.TokenFile)
+	tokenFile := cfg.TokenFile
+	if !filepath.IsAbs(tokenFile) { // relative to the config file
+		tokenFile = filepath.Join(filepath.Dir(*configPath), tokenFile)
+	}
+	token, err := os.ReadFile(tokenFile)
 	if err != nil {
 		log.Fatalf("read token: %v", err)
 	}
