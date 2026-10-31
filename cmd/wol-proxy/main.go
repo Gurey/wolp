@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -47,6 +48,7 @@ type Host struct {
 	mac net.HardwareAddr
 
 	agentToken string
+	wake       func() error // sends the magic packet; replaced in tests
 
 	mu         sync.Mutex
 	lastPacket time.Time
@@ -70,15 +72,11 @@ func main() {
 	}
 
 	for _, hc := range cfg.Hosts {
-		mac, err := net.ParseMAC(hc.MAC)
+		h, err := newHost(hc)
 		if err != nil {
-			log.Fatalf("host %s: bad mac: %v", hc.Name, err)
+			log.Fatalf("host %s: %v", hc.Name, err)
 		}
-		h := &Host{cfg: hc, mac: mac, lastActive: time.Now()}
 		if hc.Agent != "" {
-			if h.agentToken, err = readToken(hc.AgentTokenFile); err != nil {
-				log.Fatalf("host %s: %v", hc.Name, err)
-			}
 			go h.idleLoop()
 		}
 		for _, p := range hc.Ports {
@@ -94,11 +92,31 @@ func main() {
 	select {}
 }
 
+func newHost(hc HostConfig) (*Host, error) {
+	mac, err := net.ParseMAC(hc.MAC)
+	if err != nil {
+		return nil, fmt.Errorf("bad mac: %w", err)
+	}
+	h := &Host{cfg: hc, mac: mac, lastActive: time.Now()}
+	h.wake = func() error { return sendMagicPacket(mac, hc.Broadcast) }
+	if hc.Agent != "" {
+		if h.agentToken, err = readToken(hc.AgentTokenFile); err != nil {
+			return nil, err
+		}
+	}
+	return h, nil
+}
+
 func (h *Host) serve(ln net.Listener, target string) {
 	for {
 		client, err := ln.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
 		if err != nil {
+			// E.g. out of file descriptors; pause instead of spinning.
 			log.Printf("%s: accept: %v", h.cfg.Name, err)
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		go h.handle(client.(*net.TCPConn), target)
@@ -156,21 +174,25 @@ func (h *Host) maybeWake() {
 		return
 	}
 	h.lastPacket = time.Now()
-	if err := sendMagicPacket(h.mac, h.cfg.Broadcast); err != nil {
+	if err := h.wake(); err != nil {
 		log.Printf("%s: wake-on-lan: %v", h.cfg.Name, err)
 		return
 	}
 	log.Printf("%s: sent wake-on-lan to %s", h.cfg.Name, h.mac)
 }
 
+// magicPacket is 6 bytes of 0xff followed by the MAC address 16 times.
+func magicPacket(mac net.HardwareAddr) []byte {
+	return append(bytes.Repeat([]byte{0xff}, 6), bytes.Repeat(mac, 16)...)
+}
+
 func sendMagicPacket(mac net.HardwareAddr, broadcast string) error {
-	packet := append(bytes.Repeat([]byte{0xff}, 6), bytes.Repeat(mac, 16)...)
 	conn, err := net.Dial("udp", net.JoinHostPort(broadcast, "9"))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_, err = conn.Write(packet)
+	_, err = conn.Write(magicPacket(mac))
 	return err
 }
 

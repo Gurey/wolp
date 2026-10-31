@@ -40,6 +40,12 @@ type agent struct {
 	cfg      Config
 	token    []byte
 	sleeping atomic.Bool
+
+	// System hooks; tests replace them.
+	busy     func() []string
+	isActive func(service string) bool
+	waitGPU  func(timeout time.Duration) []string
+	run      func(name string, args ...string) error
 }
 
 // gpuWait is how long to wait for GPU processes to exit after stopping the service.
@@ -60,16 +66,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("read token: %v", err)
 	}
-	a := &agent{cfg: cfg, token: []byte(strings.TrimSpace(string(token)))}
+	a := &agent{
+		cfg:      cfg,
+		token:    []byte(strings.TrimSpace(string(token))),
+		busy:     func() []string { return busyReasons(cfg) },
+		isActive: func(service string) bool { return exec.Command("systemctl", "is-active", "-q", service).Run() == nil },
+		waitGPU:  waitForGPUIdle,
+		run:      runCommand,
+	}
 	if len(a.token) == 0 {
 		log.Fatal("token file is empty")
 	}
 
+	log.Printf("listening on %s (dry run: %v)", cfg.Listen, cfg.DryRun)
+	log.Fatal(http.ListenAndServe(cfg.Listen, a.routes()))
+}
+
+func (a *agent) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", a.auth(a.handleStatus))
 	mux.HandleFunc("POST /sleep", a.auth(a.handleSleep))
-	log.Printf("listening on %s (dry run: %v)", cfg.Listen, cfg.DryRun)
-	log.Fatal(http.ListenAndServe(cfg.Listen, mux))
+	return mux
 }
 
 func (a *agent) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -85,7 +102,7 @@ func (a *agent) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func (a *agent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"busy":     busyReasons(a.cfg),
+		"busy":     a.busy(),
 		"sleeping": a.sleeping.Load(),
 	})
 }
@@ -93,7 +110,7 @@ func (a *agent) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleSleep answers 409 with the reasons if the host is busy, otherwise 202
 // and starts the suspend sequence in the background.
 func (a *agent) handleSleep(w http.ResponseWriter, r *http.Request) {
-	if reasons := busyReasons(a.cfg); len(reasons) > 0 {
+	if reasons := a.busy(); len(reasons) > 0 {
 		log.Printf("sleep refused, busy: %s", strings.Join(reasons, "; "))
 		writeJSON(w, http.StatusConflict, map[string]any{"busy": reasons})
 		return
@@ -109,7 +126,7 @@ func (a *agent) goToSleep() {
 	defer a.sleeping.Store(false)
 
 	stopped := false
-	if a.cfg.Service != "" && exec.Command("systemctl", "is-active", "-q", a.cfg.Service).Run() == nil {
+	if a.cfg.Service != "" && a.isActive(a.cfg.Service) {
 		if err := a.change("systemctl", "stop", a.cfg.Service); err != nil {
 			log.Printf("stop %s: %v; not suspending", a.cfg.Service, err)
 			return
@@ -119,7 +136,7 @@ func (a *agent) goToSleep() {
 
 	if a.cfg.DryRun {
 		log.Printf("dry run: would wait up to %s for GPU processes to exit", gpuWait)
-	} else if pids := waitForGPUIdle(gpuWait); len(pids) > 0 {
+	} else if pids := a.waitGPU(gpuWait); len(pids) > 0 {
 		log.Printf("GPU still in use after stopping %s (pids %s); not suspending", a.cfg.Service, strings.Join(pids, ", "))
 		if stopped {
 			a.change("systemctl", "start", a.cfg.Service)
@@ -145,7 +162,12 @@ func (a *agent) change(name string, args ...string) error {
 		return nil
 	}
 	log.Printf("running %q", cmd)
+	return a.run(name, args...)
+}
+
+func runCommand(name string, args ...string) error {
 	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+		cmd := strings.Join(append([]string{name}, args...), " ")
 		log.Printf("%q failed: %v: %s", cmd, err, strings.TrimSpace(string(out)))
 		return err
 	}

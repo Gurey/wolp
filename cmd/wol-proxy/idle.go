@@ -30,29 +30,35 @@ func (h *Host) connClosed() {
 }
 
 // idleLoop asks the agent to sleep once the host has had no open connections
-// for the idle timeout. Both "busy" and "going to sleep" restart the
-// countdown, so a host that stays busy is asked again a full timeout later.
+// for the idle timeout. See checkIdle.
 func (h *Host) idleLoop() {
-	timeout := time.Duration(h.cfg.IdleTimeoutSecs) * time.Second
-	for range time.Tick(idleCheckInterval) {
-		h.mu.Lock()
-		idle := h.open == 0 && time.Since(h.lastActive) >= timeout
-		h.mu.Unlock()
-		if !idle {
-			continue
-		}
+	for now := range time.Tick(idleCheckInterval) {
+		h.checkIdle(now)
+	}
+}
 
-		state, restart := h.requestSleep()
-		h.mu.Lock()
-		if restart {
-			h.lastActive = time.Now()
-		}
-		changed := state != h.agentState
-		h.agentState = state
-		h.mu.Unlock()
-		if changed {
-			log.Printf("%s: agent: %s", h.cfg.Name, state)
-		}
+// checkIdle asks the agent to sleep if the host has been idle long enough.
+// Both "busy" and "going to sleep" restart the countdown, so a host that stays
+// busy is asked again a full timeout later.
+func (h *Host) checkIdle(now time.Time) {
+	timeout := time.Duration(h.cfg.IdleTimeoutSecs) * time.Second
+	h.mu.Lock()
+	idle := h.open == 0 && now.Sub(h.lastActive) >= timeout
+	h.mu.Unlock()
+	if !idle {
+		return
+	}
+
+	state, restart := h.requestSleep()
+	h.mu.Lock()
+	if restart {
+		h.lastActive = now
+	}
+	changed := state != h.agentState
+	h.agentState = state
+	h.mu.Unlock()
+	if changed {
+		log.Printf("%s: agent: %s", h.cfg.Name, state)
 	}
 }
 
