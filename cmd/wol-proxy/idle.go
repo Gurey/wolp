@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// idleCheckInterval is how often a host's idle time is checked. While a host
-// is asleep each check is one failed request to its agent, which is cheap.
-const idleCheckInterval = 10 * time.Second
+// monitorInterval is how often each host is probed and its idle time checked.
+// While a host is asleep each probe is one failed request, which is cheap.
+const monitorInterval = 10 * time.Second
 
 var agentClient = &http.Client{Timeout: 3 * time.Second}
 
@@ -20,6 +20,7 @@ func (h *Host) connOpened() {
 	h.mu.Lock()
 	h.open++
 	h.mu.Unlock()
+	h.changed()
 }
 
 func (h *Host) connClosed() {
@@ -27,13 +28,18 @@ func (h *Host) connClosed() {
 	h.open--
 	h.lastActive = time.Now()
 	h.mu.Unlock()
+	h.changed()
 }
 
-// idleLoop asks the agent to sleep once the host has had no open connections
-// for the idle timeout. See checkIdle.
-func (h *Host) idleLoop() {
-	for now := range time.Tick(idleCheckInterval) {
-		h.checkIdle(now)
+// monitor probes the host for the status page and, if it has an agent, asks
+// it to sleep once it has been idle long enough. See probe and checkIdle.
+func (h *Host) monitor() {
+	h.probe(time.Now())
+	for now := range time.Tick(monitorInterval) {
+		h.probe(now)
+		if h.cfg.Agent != "" {
+			h.checkIdle(now)
+		}
 	}
 }
 
@@ -44,7 +50,11 @@ func (h *Host) checkIdle(now time.Time) {
 	timeout := time.Duration(h.cfg.IdleTimeoutSecs) * time.Second
 	h.mu.Lock()
 	idle := h.open == 0 && now.Sub(h.lastActive) >= timeout
+	asleep := h.st.upKnown && !h.st.up
 	h.mu.Unlock()
+	if asleep {
+		return // the probe just found it asleep; nothing to ask
+	}
 	if !idle {
 		return
 	}
@@ -54,12 +64,15 @@ func (h *Host) checkIdle(now time.Time) {
 	if restart {
 		h.lastActive = now
 	}
-	changed := state != h.agentState
+	if state != h.agentState {
+		if restart {
+			h.eventLocked(now, "agent: %s", state)
+		} else {
+			log.Printf("%s: agent: %s", h.cfg.Name, state)
+		}
+	}
 	h.agentState = state
 	h.mu.Unlock()
-	if changed {
-		log.Printf("%s: agent: %s", h.cfg.Name, state)
-	}
 }
 
 // requestSleep calls the agent's POST /sleep. It returns a description for the

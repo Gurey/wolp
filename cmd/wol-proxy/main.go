@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -19,7 +20,9 @@ import (
 )
 
 type Config struct {
-	Hosts []HostConfig `toml:"hosts"`
+	// Optional address for the status page, e.g. "0.0.0.0:8090".
+	StatusListen string       `toml:"status_listen"`
+	Hosts        []HostConfig `toml:"hosts"`
 }
 
 type HostConfig struct {
@@ -55,6 +58,8 @@ type Host struct {
 	open       int       // client connections currently open, including waiting ones
 	lastActive time.Time // when the last connection closed, or a busy/sleep answer
 	agentState string    // last logged agent answer, so changes are logged once
+	st         stats     // for the status page; see status.go
+	notify     func()    // tells the status page something changed; may be nil
 }
 
 const dialTimeout = time.Second
@@ -71,23 +76,35 @@ func main() {
 		log.Fatal("config has no hosts")
 	}
 
+	var hosts []*Host
 	for _, hc := range cfg.Hosts {
 		h, err := newHost(hc)
 		if err != nil {
 			log.Fatalf("host %s: %v", hc.Name, err)
 		}
-		if hc.Agent != "" {
-			go h.idleLoop()
-		}
-		for _, p := range hc.Ports {
+		hosts = append(hosts, h)
+	}
+	// Before the hosts start, so their change notifications are wired up.
+	var status http.Handler
+	if cfg.StatusListen != "" {
+		status = statusHandler(hosts)
+	}
+
+	for _, h := range hosts {
+		go h.monitor()
+		for _, p := range h.cfg.Ports {
 			ln, err := net.Listen("tcp", p.Listen)
 			if err != nil {
-				log.Fatalf("host %s: listen %s: %v", hc.Name, p.Listen, err)
+				log.Fatalf("host %s: listen %s: %v", h.cfg.Name, p.Listen, err)
 			}
-			target := net.JoinHostPort(hc.Address, fmt.Sprint(p.Target))
-			log.Printf("%s: %s -> %s", hc.Name, p.Listen, target)
+			target := net.JoinHostPort(h.cfg.Address, fmt.Sprint(p.Target))
+			log.Printf("%s: %s -> %s", h.cfg.Name, p.Listen, target)
 			go h.serve(ln, target)
 		}
+	}
+	if status != nil {
+		log.Printf("status page on %s", cfg.StatusListen)
+		log.Fatal(http.ListenAndServe(cfg.StatusListen, status))
 	}
 	select {}
 }
@@ -130,25 +147,57 @@ func (h *Host) handle(client *net.TCPConn, target string) {
 	peer := client.RemoteAddr()
 	start := time.Now()
 
-	upstream, woke, err := h.connect(target)
+	upstream, woke, err := h.connect(target, peer)
 	if err != nil {
-		log.Printf("%s: %v: gave up after %s: %v", h.cfg.Name, peer, time.Since(start).Round(time.Millisecond), err)
+		h.mu.Lock()
+		h.st.wakeStart = time.Time{}
+		h.eventLocked(time.Now(), "gave up waiting after %s (%v)", time.Since(start).Round(time.Second), err)
+		h.mu.Unlock()
 		return
 	}
 	defer upstream.Close()
 	if woke {
-		log.Printf("%s: %v: host up after %s", h.cfg.Name, peer, time.Since(start).Round(time.Millisecond))
+		h.wokeUp(time.Now())
 	}
 
 	up, down := pipe(client, upstream)
 	log.Printf("%s: %v: closed after %s, %d bytes up, %d bytes down",
 		h.cfg.Name, peer, time.Since(start).Round(time.Millisecond), up, down)
+	h.mu.Lock()
+	h.st.conns++
+	h.st.bytesUp += up
+	h.st.bytesDn += down
+	h.mu.Unlock()
+}
+
+// wokeUp records a finished wake. Several connections may wait for the same
+// wake; only the first one to get through records it.
+func (h *Host) wokeUp(now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.setUpLocked(true, now, false)
+	if h.st.wakeStart.IsZero() {
+		return
+	}
+	h.st.wakes++
+	h.st.lastWake = now
+	h.st.lastWakeIn = now.Sub(h.st.wakeStart)
+	h.st.wakeStart = time.Time{}
+	h.eventLocked(now, "awake after %.1fs", h.st.lastWakeIn.Seconds())
 }
 
 // connect dials the target, waking the host and retrying until it answers
 // or the wake timeout runs out. woke reports whether the first dial failed.
-func (h *Host) connect(target string) (conn *net.TCPConn, woke bool, err error) {
+func (h *Host) connect(target string, peer net.Addr) (conn *net.TCPConn, woke bool, err error) {
 	deadline := time.Now().Add(time.Duration(h.cfg.WakeTimeoutSecs) * time.Second)
+	defer func() {
+		if woke {
+			h.mu.Lock()
+			h.st.waiting--
+			h.mu.Unlock()
+			h.changed()
+		}
+	}()
 	for {
 		c, err := net.DialTimeout("tcp", target, dialTimeout)
 		if err == nil {
@@ -157,8 +206,14 @@ func (h *Host) connect(target string) (conn *net.TCPConn, woke bool, err error) 
 		if time.Now().After(deadline) {
 			return nil, woke, err
 		}
-		woke = true
-		h.maybeWake()
+		if !woke {
+			woke = true
+			h.mu.Lock()
+			h.st.waiting++
+			h.mu.Unlock()
+			h.changed()
+		}
+		h.maybeWake(peer.String())
 		// A failed dial can return instantly (e.g. connection refused while
 		// the service starts), so don't spin.
 		time.Sleep(500 * time.Millisecond)
@@ -167,18 +222,25 @@ func (h *Host) connect(target string) (conn *net.TCPConn, woke bool, err error) 
 
 // maybeWake sends a magic packet unless one went out recently. Every waiting
 // connection calls this, so the resend interval doubles as the rate limit.
-func (h *Host) maybeWake() {
+// by names who the host is woken for, for the event log.
+func (h *Host) maybeWake(by string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if time.Since(h.lastPacket) < time.Duration(h.cfg.WolResendSecs)*time.Second {
+	now := time.Now()
+	if now.Sub(h.lastPacket) < time.Duration(h.cfg.WolResendSecs)*time.Second {
 		return
 	}
-	h.lastPacket = time.Now()
+	h.lastPacket = now
 	if err := h.wake(); err != nil {
-		log.Printf("%s: wake-on-lan: %v", h.cfg.Name, err)
+		h.eventLocked(now, "wake-on-lan failed: %v", err)
 		return
 	}
-	log.Printf("%s: sent wake-on-lan to %s", h.cfg.Name, h.mac)
+	if h.st.wakeStart.IsZero() {
+		h.st.wakeStart = now
+		h.eventLocked(now, "not answering, sent wake-on-lan (for %s)", by)
+	} else {
+		log.Printf("%s: resent wake-on-lan to %s", h.cfg.Name, h.mac)
+	}
 }
 
 // magicPacket is 6 bytes of 0xff followed by the MAC address 16 times.

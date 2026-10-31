@@ -224,7 +224,7 @@ func TestGivesUpAfterWakeTimeout(t *testing.T) {
 func TestWakeIsRateLimited(t *testing.T) {
 	h, wakes := testHost(t, HostConfig{WolResendSecs: 10})
 	for range 5 {
-		h.maybeWake()
+		h.maybeWake("test")
 	}
 	if n := wakes.Load(); n != 1 {
 		t.Fatalf("5 calls within the interval sent %d packets, want 1", n)
@@ -233,7 +233,7 @@ func TestWakeIsRateLimited(t *testing.T) {
 	h.mu.Lock()
 	h.lastPacket = time.Now().Add(-11 * time.Second)
 	h.mu.Unlock()
-	h.maybeWake()
+	h.maybeWake("test")
 	if n := wakes.Load(); n != 2 {
 		t.Fatalf("after the interval: %d packets, want 2", n)
 	}

@@ -4,6 +4,9 @@
 # a sleeping machine doesn't answer mDNS, so the name won't resolve
 # until it's already awake.
 
+# Optional: a status page (and JSON at /api/status) on this address.
+status_listen = "0.0.0.0:8090"
+
 [[hosts]]
 name = "server"
 mac = "10:7b:44:16:46:27"
